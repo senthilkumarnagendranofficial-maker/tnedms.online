@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Phone, MessageCircle, Eye, Pencil, Search, X, Mail, Mic, Download, MapPin, SlidersHorizontal } from 'lucide-react';
+import { Phone, MessageCircle, Eye, Pencil, Search, X, Mail, Mic, Download, MapPin, SlidersHorizontal, Shuffle, UserCheck } from 'lucide-react';
 import api from '../../api/client.js';
 import { PageHeader, Card, Pill, inr } from '../../civic/kit.jsx';
-import { DataTable, Pager, Select, Button, RowMenu, csvOf, download, fmtDate, waLink } from '../../civic/ui.jsx';
+import { DataTable, Pager, Select, Button, RowMenu, Modal, Field, csvOf, download, fmtDate, waLink } from '../../civic/ui.jsx';
 import { ALL_DISTRICTS } from '../../data/wardLocalBodies.js';
 import { SHOWS, showById, loadAllRegistrations, paidMobiles } from '../../civic/needs.js';
 
@@ -24,6 +24,33 @@ export default function Registrations({ isTeam = false }) {
   const [data, setData] = useState({ rows: [], total: 0 });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [tick, setTick] = useState(0);
+  const [msg, setMsg] = useState('');
+  // Admin-only: assign registered candidates to telecallers (round-robin / manual).
+  const [agents, setAgents] = useState(null);
+  const isAdmin = Array.isArray(agents);
+  const [assignFor, setAssignFor] = useState(null);
+  const [assignTo, setAssignTo] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api.get('/crm/agents').then(({ data: d }) => setAgents(d.agents || [])).catch(() => setAgents(null)); }, []);
+
+  const distribute = () => {
+    if (!window.confirm('Distribute these registered candidates across active telecallers (round-robin)?')) return;
+    setBusy(true); setErr(''); setMsg('');
+    api.post('/crm/leads/distribute', { scope: 'registered' })
+      .then(({ data: d }) => { setMsg(d.message || 'Distributed.'); setTick((t) => t + 1); })
+      .catch((e) => setErr(e.response?.data?.message || 'Could not distribute.'))
+      .finally(() => setBusy(false));
+  };
+  const assignCand = () => {
+    if (!assignFor || !assignTo) return;
+    setBusy(true); setErr(''); setMsg('');
+    api.post(`/crm/leads/${assignFor.mobile}/assign`, { agent_id: assignTo })
+      .then(({ data: d }) => { setMsg(d.message || 'Assigned.'); setAssignFor(null); setTick((t) => t + 1); })
+      .catch((e) => setErr(e.response?.data?.message || 'Could not assign.'))
+      .finally(() => setBusy(false));
+  };
 
   useEffect(() => { setDraft(filters); }, [filters]);
 
@@ -43,7 +70,7 @@ export default function Registrations({ isTeam = false }) {
       .catch((e) => alive && setErr(e.response?.data?.message || 'Could not load registrations.'))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [filters, page]);
+  }, [filters, page, tick]);
 
   const apply = (next, resetPage = true) => {
     const p = new URLSearchParams();
@@ -85,8 +112,10 @@ export default function Registrations({ isTeam = false }) {
     // only a positive or odd state earns a pill; 'No' on every row was noise (UX4). Passcodes live on the detail page.
     { key: 'paid_status', label: 'Paid', render: (r) => (r.paid_status === 'No' || !r.paid_status ? <span className="cv-td-quiet">—</span> : <Pill tone={paidTone(r.paid_status)} dot>{paidLabel(r.paid_status)}</Pill>) },
     { key: 'requests', label: 'Requests', medium: false, mobile: false, render: (r) => (r.requests?.length ? <span className="cv-reqs">{r.requests.map((q, i) => <span key={i} className={`cv-req cv-req--${q.service_type}`} title={`${q.service_type} · ${q.status || ''}`}>{reqIcon(q.service_type)}</span>)}</span> : <span className="cv-muted">—</span>) },
+    { key: 'assigned', label: 'Telecaller', medium: false, mobile: false, render: (r) => (r.assigned_agent_name ? <Pill tone="info">{r.assigned_agent_name}</Pill> : <span className="cv-td-quiet">—</span>) },
     { key: 'actions', label: '', render: (r) => (
       <RowMenu items={[
+        isAdmin && r.mobile && { label: 'Assign to telecaller', icon: UserCheck, onClick: () => { setAssignFor(r); setAssignTo(''); } },
         r.mobile && { label: 'Call', icon: Phone, href: `tel:${r.mobile}` },
         r.mobile && { label: 'WhatsApp', icon: MessageCircle, href: waLink(r.mobile), external: true },
         { label: 'View', icon: Eye, onClick: () => open(r) },
@@ -109,7 +138,12 @@ export default function Registrations({ isTeam = false }) {
         eyebrow={isTeam ? 'Follow-up' : undefined}
         title="Registrations"
         subtitle={loading ? 'Loading…' : shown ? `${inr(data.total)} candidate${data.total === 1 ? '' : 's'} · ${shown.label.charAt(0).toLowerCase()}${shown.label.slice(1)}` : `${inr(data.total)} candidate${data.total === 1 ? '' : 's'} registered through WhatsApp or the website`}
-        actions={<Button variant="ghost" icon={Download} onClick={exportCsv}>Export CSV</Button>}
+        actions={(
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {isAdmin && <Button variant="ghost" icon={Shuffle} onClick={distribute} disabled={busy}>Distribute (round-robin)</Button>}
+            <Button variant="ghost" icon={Download} onClick={exportCsv}>Export CSV</Button>
+          </div>
+        )}
       />
 
       <Card flush>
@@ -153,9 +187,20 @@ export default function Registrations({ isTeam = false }) {
           </div>
         )}
         {err && <div className="cv-alert cv-alert--bad" style={{ margin: 16 }}>{err}</div>}
+        {msg && <div className="cv-alert cv-alert--ok" style={{ margin: 16 }} onClick={() => setMsg('')}>{msg}</div>}
         <DataTable columns={columns} rows={data.rows} rowKey={(r) => r._id || r.id} onRowClick={open} loading={loading} empty={shown ? shown.empty : 'No registrations match these filters.'} />
         <Pager page={page} pageSize={PAGE_SIZE} total={data.total} onPage={(p) => { const n = new URLSearchParams(params); n.set('page', String(p)); setParams(n); }} />
       </Card>
+
+      <Modal open={!!assignFor} title={assignFor ? `Assign to telecaller · ${assignFor.full_name || assignFor.mobile}` : ''} onClose={() => setAssignFor(null)}>
+        <Field label="Telecaller" hint="The candidate moves into this telecaller's inbox for follow-up.">
+          <Select data-autofocus value={assignTo} onChange={(e) => setAssignTo(e.target.value)} aria-label="Telecaller">
+            <option value="">Select a telecaller…</option>
+            {(agents || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </Select>
+        </Field>
+        <div className="cv-modal-actions"><Button onClick={assignCand} disabled={!assignTo || busy}>{busy ? 'Assigning…' : 'Assign'}</Button></div>
+      </Modal>
     </div>
   );
 }

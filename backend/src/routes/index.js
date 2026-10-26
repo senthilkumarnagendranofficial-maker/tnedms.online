@@ -114,6 +114,9 @@ r.post('/crm/send-credentials', crmAccess, crm.sendCredentials);
 r.post('/crm/send-flow', crmAccess, crm.sendFlow);
 r.get('/crm/agents', adminOnly, crm.listAgents);
 r.post('/crm/distribute-leads', adminOnly, crm.distributeLeads);
+// Assign incomplete/website leads (tbl_leads) to telecallers — round-robin or manual
+r.post('/crm/leads/distribute', adminOnly, crm.distributeIncompleteLeads);
+r.post('/crm/leads/:phone/assign', adminOnly, crm.assignLead);
 r.get('/crm/settings', crmAccess, crm.getCrmSettings);        // telecallers read (to know if claim is on)
 r.put('/crm/settings', adminOnly, crm.updateCrmSettings);     // only admin changes
 r.post('/crm/conversations/:phone/claim', crmAccess, crm.claimLead);

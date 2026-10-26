@@ -116,7 +116,7 @@ export async function list(req, res) {
     const crmThreads = mobiles.length
       ? await db.collection('tbl_crm_conversation').find(
           { clean_mobile: { $in: mobiles } },
-          { projection: { clean_mobile: 1, source: 1 } }
+          { projection: { clean_mobile: 1, source: 1, assigned_agent_name: 1, assigned_agent_id: 1 } }
         ).toArray()
       : [];
     const crmByMobile = {};
@@ -160,6 +160,8 @@ export async function list(req, res) {
         booths: rawBooths,
         booth_count: rawBooths.length || r.booth_count || 0,
         passcode: isAdminReq(req) ? (r.passcode || uRec?.password_str || '-') : PASSCODE_MASK,
+        assigned_agent_name: cRec?.assigned_agent_name || null,
+        assigned_agent_id: cRec?.assigned_agent_id || null,
         paid_status: paidFlag(uRec?.paid_status),
         transaction_id: uRec?.transaction_id || null,
         created_at: r.created_at || '-',

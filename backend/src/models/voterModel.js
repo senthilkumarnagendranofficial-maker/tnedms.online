@@ -30,9 +30,13 @@ function buildQuery({ min_age, max_age, boothId, partNos, gender, has_mobile, se
     if (max_age) q.AGE.$lte = parseInt(max_age, 10);
   }
   if (Array.isArray(partNos) && partNos.length) {
-    q.PART_NO = { $in: partNos.map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n)) };
-  } else if (boothId) {
-    q.PART_NO = parseInt(boothId, 10);
+    // Voter rows store PART_NO as a STRING ('108') in this dataset, but booth
+    // selections come in as numbers — match BOTH so the booth filter works.
+    const nums = partNos.map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n));
+    q.PART_NO = { $in: [...nums, ...nums.map(String)] };
+  } else if (boothId !== undefined && boothId !== null && String(boothId) !== '') {
+    const n = parseInt(boothId, 10);
+    if (!Number.isNaN(n)) q.PART_NO = { $in: [n, String(n)] };
   }
   if (gender) q.GENDER = gender;
   if (has_mobile === '1' || has_mobile === 1 || has_mobile === true) {
@@ -149,7 +153,8 @@ export async function genderCountsForParts(assemblyId, partNos) {
   const coll = db.collection(collectionForAc(assemblyId));
   const match = {};
   if (Array.isArray(partNos) && partNos.length) {
-    match.PART_NO = { $in: partNos.map((p) => parseInt(p, 10)).filter((n) => !Number.isNaN(n)) };
+    const nums = partNos.map((p) => parseInt(p, 10)).filter((n) => !Number.isNaN(n));
+    match.PART_NO = { $in: [...nums, ...nums.map(String)] }; // PART_NO stored as string/number
   }
   const agg = await coll.aggregate([
     ...(Object.keys(match).length ? [{ $match: match }] : []),
@@ -174,12 +179,12 @@ export async function assemblyAnalytics(assemblyId, booth = null, partNos = null
       .map((p) => (typeof p === 'object' && p !== null ? parseInt(p.part_no, 10) : parseInt(p, 10)))
       .filter((n) => !Number.isNaN(n));
     if (validParts.length > 0) {
-      match = [{ $match: { PART_NO: { $in: validParts } } }];
+      match = [{ $match: { PART_NO: { $in: [...validParts, ...validParts.map(String)] } } }];
     }
   } else if (booth != null && booth !== '') {
     const partNo = parseInt(booth, 10);
     if (!Number.isNaN(partNo)) {
-      match = [{ $match: { PART_NO: partNo } }];
+      match = [{ $match: { PART_NO: { $in: [partNo, String(partNo)] } } }];
     }
   }
 

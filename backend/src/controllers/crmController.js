@@ -1368,3 +1368,101 @@ export async function clearChat(req, res) {
     return res.status(500).json({ success: false, message: err.message || 'Failed to clear chat.' });
   }
 }
+
+// ── Incomplete / website leads → telecaller assignment ─────────────────────────
+// The incomplete-registration list (tbl_leads) has no owner of its own. To assign
+// such a lead to a telecaller we first make sure a CRM conversation exists for that
+// number, then assign it with the SAME engine the inbox uses (round-robin / manual).
+
+// Create a bare CRM conversation for a lead number if one doesn't exist yet, so it
+// can be assigned + worked in the inbox. No-op (just a touch) if it already exists.
+async function ensureConversation(db, cleanMobile, name) {
+  await db.collection('tbl_crm_conversation').updateOne(
+    { clean_mobile: cleanMobile },
+    {
+      $setOnInsert: {
+        clean_mobile: cleanMobile, phone: `91${cleanMobile}`,
+        contact_name: name || `Lead ${cleanMobile.slice(-4)}`,
+        status: 'open', lead_status: 'new', unread_count: 0,
+        last_message: 'Incomplete registration', last_message_at: new Date(), created_at: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+}
+
+/**
+ * POST /api/crm/leads/:phone/assign — MANUALLY assign an incomplete/website lead to
+ * a chosen telecaller. Admin only. Body: { agent_id }. Creates the conversation if
+ * needed, then sets the owner (overrides any claim lock, logged).
+ */
+export async function assignLead(req, res) {
+  try {
+    if (isCrmAgent(req)) return res.status(403).json({ success: false, message: 'Not authorized.' });
+    const db = getAppDb();
+    const cleanMobile = String(req.params.phone).replace(/\D/g, '').slice(-10);
+    if (cleanMobile.length !== 10) return res.status(400).json({ success: false, message: 'Invalid mobile number.' });
+    const { agent_id } = req.body || {};
+    const agents = await getActiveAgents(db);
+    const agent = agents.find((a) => a.id === String(agent_id));
+    if (!agent) return res.status(400).json({ success: false, message: 'Invalid or inactive telecaller.' });
+
+    const lead = await db.collection('tbl_leads').findOne({ mobile: cleanMobile }, { projection: { web_name: 1, wa_name: 1 } });
+    const enq = await db.collection('tbl_enquiry').findOne({ mobile: cleanMobile }, { projection: { full_name: 1, firstname: 1 } });
+    const name = lead?.web_name || lead?.wa_name || enq?.full_name || enq?.firstname || `Lead ${cleanMobile.slice(-4)}`;
+    await ensureConversation(db, cleanMobile, name);
+
+    const now = new Date();
+    await db.collection('tbl_crm_conversation').updateOne(
+      { clean_mobile: cleanMobile },
+      {
+        $set: { assigned_agent_id: agent.id, assigned_agent_name: agent.name, assigned_at: now, assigned_by: 'manual', taken: false, updated_at: now },
+        $push: { assignment_history: { status: 'assigned', note: `Lead assigned → ${agent.name}`, by: req.user?.name || 'Admin', at: now, source: 'incomplete-lead' } },
+      },
+    );
+    return res.json({ success: true, message: `Lead assigned to ${agent.name}.`, agent: agent.name });
+  } catch (err) {
+    console.error('[CRM assignLead Error]:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Failed to assign lead.' });
+  }
+}
+
+/**
+ * POST /api/crm/leads/distribute — ROUND-ROBIN distribute the open incomplete leads
+ * (website/WhatsApp) across active telecallers. Admin only. Ensures a conversation
+ * exists for each open, not-yet-registered, not-"not interested" lead, then runs the
+ * same round-robin the inbox Distribute uses. Body: { reassign_all? }.
+ */
+export async function distributeIncompleteLeads(req, res) {
+  try {
+    if (isCrmAgent(req)) return res.status(403).json({ success: false, message: 'Not authorized.' });
+    const db = getAppDb();
+    // scope: 'incomplete' (website/WhatsApp leads, default), 'registered' (completed
+    // candidates), or 'all'. Ensures a conversation exists for each, then round-robins.
+    const scope = ['incomplete', 'registered', 'all'].includes(req.body?.scope) ? req.body.scope : 'incomplete';
+    const clean10 = (m) => String(m || '').replace(/\D/g, '').slice(-10);
+    let ensured = 0;
+    if (scope === 'incomplete' || scope === 'all') {
+      const leads = await db.collection('tbl_leads')
+        .find({ registered_at: { $in: [null] }, status: { $nin: ['not_interested'] } }, { projection: { mobile: 1, web_name: 1, wa_name: 1 } })
+        .limit(10000).toArray();
+      for (const l of leads) { const m = clean10(l.mobile); if (m.length === 10) { await ensureConversation(db, m, l.web_name || l.wa_name); ensured += 1; } }
+    }
+    if (scope === 'registered' || scope === 'all') {
+      const regs = await db.collection('tbl_enquiry')
+        .find({}, { projection: { mobile: 1, full_name: 1, firstname: 1 } })
+        .limit(10000).toArray();
+      for (const e of regs) { const m = clean10(e.mobile); if (m.length === 10) { await ensureConversation(db, m, e.full_name || e.firstname); ensured += 1; } }
+    }
+    const r = await runDistribute(db, { reassignAll: req.body?.reassign_all === true });
+    if (r.reason === 'no_agents') return res.status(400).json({ success: false, message: 'No active telecaller to assign leads to. Create/activate a team member first.' });
+    return res.json({
+      success: true,
+      message: r.assigned ? `Distributed ${r.assigned} lead(s) across ${r.agents} telecaller(s).` : `No unassigned leads needed distribution (${ensured} checked).`,
+      assigned: r.assigned, per_agent: r.per_agent, ensured,
+    });
+  } catch (err) {
+    console.error('[CRM distributeIncompleteLeads Error]:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Failed to distribute leads.' });
+  }
+}

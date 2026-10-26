@@ -53,10 +53,20 @@ export async function list(req, res) {
     // warmest first: furthest step, then most recent
     const sort = tab === 'open' ? { step_rank: -1, last_seen: -1 } : tab === 'registered' ? { registered_at: -1 } : { status_at: -1 };
     const rows = await coll.find(filter).sort(sort).skip((page - 1) * pageSize).limit(pageSize).toArray();
+    // Show which telecaller a lead is assigned to (assignment lives on the CRM
+    // conversation, keyed by number).
+    const mobiles = rows.map((r) => String(r.mobile || '').replace(/\D/g, '').slice(-10)).filter((m) => m.length === 10);
+    const convs = mobiles.length
+      ? await db.collection('tbl_crm_conversation').find({ clean_mobile: { $in: mobiles } }, { projection: { clean_mobile: 1, assigned_agent_name: 1, assigned_agent_id: 1 } }).toArray()
+      : [];
+    const convByMobile = Object.fromEntries(convs.map((c) => [c.clean_mobile, c]));
     res.json({
       success: true, tab, page, pageSize, total: counts[tab], counts,
       steps: Object.fromEntries(Object.entries(LEAD_STEPS).map(([k, v]) => [k, v.label])), last_rank: Math.max(...Object.values(LEAD_STEPS).map((s) => s.rank)),
-      rows: rows.map((r) => ({ ...r, name: r.web_name || r.wa_name || '', step_label: LEAD_STEPS[r.step]?.label || r.step })),
+      rows: rows.map((r) => {
+        const c = convByMobile[String(r.mobile || '').replace(/\D/g, '').slice(-10)];
+        return { ...r, name: r.web_name || r.wa_name || '', step_label: LEAD_STEPS[r.step]?.label || r.step, assigned_agent_name: c?.assigned_agent_name || null, assigned_agent_id: c?.assigned_agent_id || null };
+      }),
     });
   } catch (e) {
     if (e.message === 'APP_DB_OFFLINE') return res.status(503).json({ success: false, message: 'App database unavailable.' });

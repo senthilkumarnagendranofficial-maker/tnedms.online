@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Phone, MessageCircle, StickyNote, Search, X, Download } from 'lucide-react';
+import { Phone, MessageCircle, StickyNote, Search, X, Download, Shuffle, UserCheck } from 'lucide-react';
 import api from '../../api/client.js';
 import { PageHeader, Card, Pill, Segmented, inr } from '../../civic/kit.jsx';
 import { DataTable, Pager, Select, Button, RowMenu, Modal, Textarea, Field, csvOf, download, fmtDate, fmtDateTime, waLink } from '../../civic/ui.jsx';
@@ -27,6 +27,33 @@ export default function Leads({ isTeam = false }) {
   const [noteFor, setNoteFor] = useState(null);
   const [note, setNote] = useState('');
   const [tick, setTick] = useState(0);
+  const [msg, setMsg] = useState('');
+  // Admin-only: assign incomplete leads to telecallers (round-robin / manual).
+  // /crm/agents is adminOnly, so a successful fetch also tells us the user is admin.
+  const [agents, setAgents] = useState(null); // null = not admin / unknown; array = admin
+  const isAdmin = Array.isArray(agents);
+  const [assignFor, setAssignFor] = useState(null); // the lead row being assigned
+  const [assignTo, setAssignTo] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api.get('/crm/agents').then(({ data }) => setAgents(data.agents || [])).catch(() => setAgents(null)); }, []);
+
+  const distribute = () => {
+    if (!window.confirm('Distribute all open incomplete leads across active telecallers (round-robin)?')) return;
+    setBusy(true); setErr(''); setMsg('');
+    api.post('/crm/leads/distribute', {})
+      .then(({ data }) => { setMsg(data.message || 'Distributed.'); setTick((t) => t + 1); })
+      .catch((e) => setErr(e.response?.data?.message || 'Could not distribute leads.'))
+      .finally(() => setBusy(false));
+  };
+  const assignLead = () => {
+    if (!assignFor || !assignTo) return;
+    setBusy(true); setErr(''); setMsg('');
+    api.post(`/crm/leads/${assignFor.mobile}/assign`, { agent_id: assignTo })
+      .then(({ data }) => { setMsg(data.message || 'Assigned.'); setAssignFor(null); setTick((t) => t + 1); })
+      .catch((e) => setErr(e.response?.data?.message || 'Could not assign lead.'))
+      .finally(() => setBusy(false));
+  };
 
   useEffect(() => { setDraft(search); }, [search]);
   useEffect(() => {
@@ -96,8 +123,10 @@ export default function Leads({ isTeam = false }) {
       const last = r.notes?.[r.notes.length - 1];
       return last ? <div className="cv-two"><span>{last.text.length > 70 ? `${last.text.slice(0, 70)}…` : last.text}</span><span className="cv-muted">{fmtDate(last.at)}{r.notes.length > 1 ? ` · ${r.notes.length} notes` : ''}</span></div> : <span className="cv-td-quiet">—</span>;
     } },
+    { key: 'assigned', label: 'Telecaller', mobile: false, render: (r) => (r.assigned_agent_name ? <Pill tone="info">{r.assigned_agent_name}</Pill> : <span className="cv-td-quiet">—</span>) },
     { key: 'actions', label: '', render: (r) => (
       <RowMenu items={[
+        isAdmin && { label: 'Assign to telecaller', icon: UserCheck, onClick: () => { setAssignFor(r); setAssignTo(''); } },
         { label: 'Call', icon: Phone, href: `tel:${r.mobile}` },
         { label: 'WhatsApp', icon: MessageCircle, href: waLink(r.mobile), external: true },
         { label: 'Add a note', icon: StickyNote, onClick: () => { setNoteFor(r); setNote(''); } },
@@ -118,7 +147,12 @@ export default function Leads({ isTeam = false }) {
         eyebrow={isTeam ? 'Follow-up' : undefined}
         title="Incomplete registrations"
         subtitle={loading && !data.rows.length ? 'Loading…' : `${inr(c.open || 0)} ${c.open === 1 ? 'person' : 'people'} to follow up · messaged the WhatsApp bot or started the website form but did not finish`}
-        actions={<Button variant="ghost" icon={Download} onClick={exportCsv}>Export CSV</Button>}
+        actions={(
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {isAdmin && <Button variant="ghost" icon={Shuffle} onClick={distribute} disabled={busy}>Distribute (round-robin)</Button>}
+            <Button variant="ghost" icon={Download} onClick={exportCsv}>Export CSV</Button>
+          </div>
+        )}
       />
       <Card flush>
         <div className="cv-filters">
@@ -138,10 +172,21 @@ export default function Leads({ isTeam = false }) {
           {(search || source) && <Button variant="ghost" icon={X} onClick={() => go({ search: '', source: '', page: '' })}>Clear</Button>}
         </form>
         {err && <div className="cv-alert cv-alert--bad" style={{ margin: 16 }}>{err}</div>}
+        {msg && <div className="cv-alert cv-alert--ok" style={{ margin: 16 }} onClick={() => setMsg('')}>{msg}</div>}
         <DataTable columns={columns} rows={data.rows} rowKey={(r) => r._id} loading={loading}
           empty={tab === 'open' ? 'Nobody to follow up right now.' : tab === 'registered' ? 'Nobody from this list has registered yet.' : `Nobody marked ${TABS.find(([k]) => k === tab)[1].toLowerCase()} yet.`} />
         <Pager page={page} pageSize={PAGE_SIZE} total={data.total} onPage={(p) => go({ page: String(p) })} />
       </Card>
+
+      <Modal open={!!assignFor} title={assignFor ? `Assign to telecaller · ${assignFor.name || assignFor.mobile}` : ''} onClose={() => setAssignFor(null)}>
+        <Field label="Telecaller" hint="The lead moves into this telecaller's inbox. A conversation is created if one doesn't exist yet.">
+          <Select data-autofocus value={assignTo} onChange={(e) => setAssignTo(e.target.value)} aria-label="Telecaller">
+            <option value="">Select a telecaller…</option>
+            {(agents || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </Select>
+        </Field>
+        <div className="cv-modal-actions"><Button onClick={assignLead} disabled={!assignTo || busy}>{busy ? 'Assigning…' : 'Assign'}</Button></div>
+      </Modal>
 
       <Modal open={!!noteFor} title={noteFor ? `Note · ${noteFor.name || noteFor.mobile}` : ''} onClose={() => setNoteFor(null)}>
         {noteFor?.notes?.length > 0 && (
