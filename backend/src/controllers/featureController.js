@@ -71,7 +71,10 @@ export async function templates(req, res, list = listWactoTemplates) {
   try {
     res.json({ success: true, templates: await list() });
   } catch (e) {
-    res.status(502).json({ success: false, message: String(e.message || e).slice(0, 300), templates: [] });
+    // WACTO templates are an optional external dependency (its API / API key may
+    // not be set up locally). Degrade gracefully with an empty list + a note so the
+    // UI shows "no templates" instead of a 502 console error.
+    res.json({ success: true, templates: [], configured: false, note: String(e.message || e).slice(0, 300) });
   }
 }
 

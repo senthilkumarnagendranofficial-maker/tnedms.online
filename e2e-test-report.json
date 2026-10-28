@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-10-27T12:27:37.840Z",
+  "summary": {
+    "total": 5,
+    "passed": 3,
+    "failed": 2,
+    "passRate": "60.0%"
+  },
+  "environment": {
+    "baseUrl": "http://localhost:5173",
+    "apiUrl": "http://127.0.0.1:5000"
+  },
+  "results": [
+    {
+      "testItem": "Direct access (No HTTP Basic Auth prompt)",
+      "targetUrl": "http://localhost:5173",
+      "expectedResult": "Page opens directly without prompt",
+      "status": "PASS",
+      "details": "",
+      "timestamp": "2026-10-27T12:27:37.763Z"
+    }
+  ]
+}

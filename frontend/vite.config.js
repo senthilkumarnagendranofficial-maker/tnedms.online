@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Dev proxy target: the live API by default; set EDM_API_TARGET (e.g.
-// http://localhost:5055) to run the admin against a local backend.
-const API_TARGET = process.env.EDM_API_TARGET || 'https://www.tnedms.com';
+// Dev proxy target: the LOCAL backend by default (so `npm run dev` just works and
+// never silently hits production). Set EDM_API_TARGET=https://www.tnedms.com to
+// read the live site instead — doing so turns on the read-only lock below.
+const API_TARGET = process.env.EDM_API_TARGET || 'http://127.0.0.1:5000';
 
 // Read-only lock (dev server only; `vite build` never includes it). Whenever the dev proxy points
 // anywhere but this computer, i.e. the live site, the admin can read but not change anything:

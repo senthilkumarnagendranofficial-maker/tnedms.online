@@ -106,7 +106,7 @@ export async function login(req, res) {
     const user = await findByCredentials(username, password);
     if (!user) {
       await recordLoginFail(db, lockId);
-      return res.status(401).json({ success: false, message: 'Invalid login or password.' });
+      return res.status(401).json({ success: false, message: 'Invalid username or password.' });
     }
     if (Number(user.is_active ?? 1) !== 1 && Number(user.user_group_id) !== ROLES.MLA) {
       return res.status(403).json({ success: false, message: 'Your account is deactivated.' });
